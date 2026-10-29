@@ -39,3 +39,7 @@ To change which cars can be picked as opponents, or their classes, edit the tabl
 ## Compatibility
 
 The mod only works with `NFS13.exe` version 1.4.0.0. At startup it checks the bytes at every place it hooks. If anything doesn't match, it changes nothing and writes an error to the log.
+
+## AI disclosure
+
+The mod was written with Claude and tested by a human.
