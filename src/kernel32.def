@@ -1,0 +1,17 @@
+LIBRARY kernel32.dll
+EXPORTS
+GetModuleFileNameA@12
+CreateThread@24
+Sleep@4
+GetTickCount@0
+CreateFileA@28
+WriteFile@20
+FlushFileBuffers@4
+VirtualProtect@16
+VirtualAlloc@16
+VirtualQuery@12
+FlushInstructionCache@12
+GetCurrentProcess@0
+GetPrivateProfileIntA@16
+QueryPerformanceCounter@4
+AddVectoredExceptionHandler@8
