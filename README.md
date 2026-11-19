@@ -1,4 +1,4 @@
-# OpenRaces
+# Open Races
 
 An ASI mod for **Need for Speed: Most Wanted (2012)**, PC version 1.4.0.0 (`NFS13.exe`).
 
@@ -41,6 +41,9 @@ To change which cars can be picked as opponents, or their classes, edit the tabl
 ## Compatibility
 
 The mod only works with `NFS13.exe` version 1.4.0.0. At startup it checks the bytes at every place it hooks. If anything doesn't match, it changes nothing and writes an error to the log.
+
+# Special thanks
+ThirteenAG for the [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases)
 
 ## AI disclosure
 
