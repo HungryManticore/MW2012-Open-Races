@@ -15,3 +15,5 @@ GetCurrentProcess@0
 GetPrivateProfileIntA@16
 QueryPerformanceCounter@4
 AddVectoredExceptionHandler@8
+ReadProcessMemory@20
+WriteProcessMemory@20

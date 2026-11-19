@@ -10,6 +10,7 @@ An ASI mod for **Need for Speed: Most Wanted (2012)**, PC version 1.4.0.0 (`NFS1
 - **Free-roam markers follow you.** The game only has room for 20 event markers at once. The mod fills them with the 20 events nearest you and refreshes them every 100 m.
 - **Random opponents.** In every race, each AI racer gets a random car, and a random paint colour, from the same class as your car.
 - **Most Wanted races are left alone.** All 14 of them (base game plus DLC) keep their original opponent.
+- **Big races load with random opponents.** The game would otherwise also preload every race's original opponent cars, and some race intros (for example Round Trip) wait for specific original opponents and never finish loading. The mod takes care of both.
 
 ## Installation
 
@@ -26,6 +27,7 @@ An ASI mod for **Need for Speed: Most Wanted (2012)**, PC version 1.4.0.0 (`NFS1
 | `SkipMostWantedRaces` | 1 | Leave Most Wanted races untouched |
 | `AllEventsForAllCars` | 1 | Open every event to every car |
 | `FixNewEventsFlag` | 1 | Base the EasyDrive "NEW" badge on the original event lists |
+| `FixRaceIntro` | 1 | Point race intros that feature specific opponents at the randomized cars (needed for Round Trip) |
 | `AvoidDuplicateOpponents` | 1 | Avoid giving two opponents the same car |
 | `AvoidPlayerCar` | 1 | Avoid giving an opponent your own car |
 | `WriteLog` | 1 | Write `OpenRaces.log` next to the ASI |

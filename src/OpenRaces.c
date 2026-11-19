@@ -9,7 +9,10 @@
  *
  * Key hook points (game addresses, v1.4.0.0):
  *   0x00595B60  SetSlotVehicle(slot, id, livery, flag)   - opponent car assignment
- *   0x0057BC70  vehicle bundle loader                    - logging only
+ *   0x0057BC70  vehicle bundle loader                    - version check only
+ *   0x006CC9A1  racer setup (racer record car id)        - random car chosen here, before the racer is configured
+ *   0x0075C3D1 / 0x0075C497  race car preloader lists    - original opponents replaced, so they are not loaded too
+ *   race intro sequences (AddRaceCarSequenceItem data)   - opponents named by car id are pointed at the new cars
  *   0x006E65E0  post-event awards                        - part rewards filter
  *   0x006ECD70  car's own event list (max 10)            - replaced, original lists
  *   0x006ECA10  event/car membership                     - EasyDrive Races caller gets original lists
@@ -27,6 +30,7 @@ API HANDLE CreateFileA(const char*,DWORD,DWORD,void*,DWORD,DWORD,HANDLE);
 API BOOL WriteFile(HANDLE,const void*,DWORD,DWORD*,void*); API BOOL FlushFileBuffers(HANDLE);
 API BOOL VirtualProtect(void*,SIZE_T,DWORD,DWORD*); API void* VirtualAlloc(void*,SIZE_T,DWORD,DWORD);
 API BOOL FlushInstructionCache(HANDLE,const void*,SIZE_T); API HANDLE GetCurrentProcess(void);
+API BOOL ReadProcessMemory(HANDLE,const void*,void*,SIZE_T,SIZE_T*); API BOOL WriteProcessMemory(HANDLE,void*,const void*,SIZE_T,SIZE_T*);
 API unsigned GetPrivateProfileIntA(const char*,const char*,int,const char*);
 API BOOL QueryPerformanceCounter(long long*);
 API void* AddVectoredExceptionHandler(unsigned long,long(__stdcall*)(void*));
@@ -49,13 +53,15 @@ static const int kPaints[]={1197606,1197607,1197608,1197609,1197610,1197611,1197
                             1454600,1454601,1454602,1454603,1454604,1454605,1454606,1454607,1454608};
 #define NPAINTS ((int)(sizeof(kPaints)/sizeof(kPaints[0])))
 static int g_playerId=0;
+static DWORD g_t0=0;
+static DWORD g_seqFixUntil=0, g_seqNext=0; static int g_seqFixOn=1;
 static int g_used[64]; static int g_nUsed=0; static DWORD g_lastPick=0;
 static unsigned g_rng=0x9E3779B9u;
 
 typedef int (__fastcall *LoadFn)(void*,void*,int,int,int,int,int);
 typedef int (__fastcall *SetSlotFn)(void*,void*,int,int,int,int);
 typedef BYTE (__fastcall *Fn1)(void*,void*,int);
-static LoadFn g_origLoad; static SetSlotFn g_origSet;
+static SetSlotFn g_origSet;
 
 #define SET_ADDR 0x00595B60
 static const BYTE kExpSet[16]={0x83,0xEC,0x10,0x53,0x55,0x56,0x8B,0x74,0x24,0x20,0x8B,0xEE,0x69,0xED,0x40,0x1C};
@@ -98,6 +104,55 @@ static int readable(void* p){ MBI m;
 static int g_slotOrig[MAXSLOT], g_slotNew[MAXSLOT], g_slotPaint[MAXSLOT]; static DWORD g_slotTime[MAXSLOT];
 
 /* SetSlotVehicle(slot, vehicleId, liveryId, flag) - __thiscall, ret 0x10 */
+/* Pre-randomization: each racer is configured for its car (0x6CA580) from its racer record BEFORE the
+   car is assigned to a slot. Pick the random car there, so the racer is set up for the car it will drive. */
+typedef struct { BYTE* rec; int orig, now_; DWORD t; void* game; } PreMap;
+static PreMap g_pm[32]; static int g_npm=0;
+typedef struct { BYTE* rec; int orig; } RecOrig; static RecOrig g_recOrig[256]; static int g_nRecOrig=0;
+static PreMap* pmFind(int newId){ DWORD now=GetTickCount();
+  for(int i=0;i<g_npm;i++) if(g_pm[i].now_==newId && now-g_pm[i].t<120000) return &g_pm[i]; return 0; }
+/* 0x68E000 = racer record refresh (thiscall rec, arg game): re-validates the record's five
+   customisation entries (+0x70..+0xA8: parts / livery) against the record's car (+0x30). */
+typedef void (__fastcall *RecRefreshFn)(BYTE*,void*,void*);
+static void refreshRecord(BYTE* rec,void* game){
+  if(!rec || !game || !readable(rec+0xA8) || !readable(game)) return;
+  ((RecRefreshFn)0x0068E000)(rec,0,game);
+}
+static void* volatile g_game=0;
+void __cdecl premap(int* idp,BYTE* rec,void* game){
+  if(game) g_game=game;
+  if(!idp) return;
+  int id=*idp; char b[200];
+  /* The racer record keeps the car we gave it last time (+0x30 is written below), so remember each record's
+     real car the first time we see it and always start from that. */
+  if(rec){ int k; for(k=0;k<g_nRecOrig;k++) if(g_recOrig[k].rec==rec) break;
+    if(k<g_nRecOrig){ if(id!=g_recOrig[k].orig){ id=g_recOrig[k].orig; *idp=id;
+        if(readable(rec+0x30)){ *(int*)(rec+0x30)=id; if(!g_enabled) refreshRecord(rec,game); } } }
+    else if(g_nRecOrig<256){ g_recOrig[g_nRecOrig].rec=rec; g_recOrig[g_nRecOrig].orig=id; g_nRecOrig++; } }
+  if(!g_enabled || !g_playerId) return;
+  const Car* c=find(id); const Car* pl=find(g_playerId);
+  if(!c || !pl) return;
+  if(rec && readable(rec+0x30) && *(int*)(rec+0x30)!=id) return;
+  DWORD now=GetTickCount();
+  if(now-g_lastPick>8000){ g_nUsed=0; g_npm=0; } g_lastPick=now;
+  int r=pick(pl->cls); if(!r) return;
+  if(g_nUsed<64) g_used[g_nUsed++]=r;
+  *idp=r; if(rec){ *(int*)(rec+0x30)=r; refreshRecord(rec,game); }
+  g_seqFixUntil=now+40000; g_seqNext=0;
+  if(g_npm<32){ g_pm[g_npm].rec=rec; g_pm[g_npm].orig=id; g_pm[g_npm].now_=r; g_pm[g_npm].t=now; g_pm[g_npm].game=game; g_npm++; }
+  DWORD t=now-g_t0; wsprintfA(b,"[racer setup %d.%ds] %d (%s) -> %d (%s)",t/1000,(t/100)%10,id,c->name,r,find(r)->name); logf_(b);
+}
+#define PM_ADDR 0x006CC9A1
+static const BYTE kExpPm[8]={0x8B,0x17,0x8B,0x4C,0x24,0x24,0x8B,0x00};
+volatile unsigned g_pmRet=0x006CC9A9;
+void PmStub(void);
+__asm__(".globl _PmStub\n_PmStub:\n"
+  "  pushl %eax\n  pushl %ecx\n  pushl %edx\n"
+  "  pushl 0x94(%esi)\n  pushl 0x57c(%esi)\n  pushl %eax\n  call _premap\n  addl $12,%esp\n"
+  "  popl %edx\n  popl %ecx\n  popl %eax\n"
+  "  movl (%edi),%edx\n  movl 0x24(%esp),%ecx\n  movl (%eax),%eax\n"
+  "  jmp *_g_pmRet\n");
+
 static int __fastcall HookSet(void* self,void* edx,int slot,int id,int livery,int flag){
   char b[256];
   if(slot<0||slot>=MAXSLOT) return g_origSet(self,edx,slot,id,livery,flag);
@@ -111,6 +166,7 @@ static int __fastcall HookSet(void* self,void* edx,int slot,int id,int livery,in
      It is set on the slot (+0x1A34) just before the car is assigned. */
   if(g_skipMW && *(int*)((BYTE*)self+slot*0x1C40+0x3050+0x1A34)==MW_AI_PROFILE){
     g_slotOrig[slot]=g_slotNew[slot]=0;
+    { PreMap* pm=pmFind(id); if(pm){ if(pm->rec){ *(int*)(pm->rec+0x30)=pm->orig; refreshRecord(pm->rec,pm->game); } id=pm->orig; pm->now_=0; } }
     wsprintfA(b,"[opponent] slot %d: %d (%s) unchanged [Most Wanted race]",slot,id,find(id)?find(id)->name:"?"); logf_(b);
     return g_origSet(self,edx,slot,id,livery,flag);
   }
@@ -126,18 +182,89 @@ static int __fastcall HookSet(void* self,void* edx,int slot,int id,int livery,in
     return g_origSet(self,edx,slot,id,livery,flag);
   }
   if(now-g_lastPick>8000) g_nUsed=0; g_lastPick=now;
-  int r=pick(pl->cls); if(!r) r=id;
+  int r; PreMap* pm=pmFind(id);
+  if(pm){ r=id; id=pm->orig; orig=find(id); if(!orig) orig=find(r); }   /* chosen at racer setup already */
+  else {
+  r=pick(pl->cls); if(!r) r=id;  /* class has no allowed car: keep the game's own choice */
   if(g_nUsed<64) g_used[g_nUsed++]=r;
+  }
   int paint = g_paint ? kPaints[rnd()%NPAINTS] : ((r==id)?livery:0);
   g_slotOrig[slot]=id; g_slotNew[slot]=r; g_slotPaint[slot]=paint; g_slotTime[slot]=now;
-  wsprintfA(b,"[opponent] slot %d: %d (%s) -> %d (%s), paint %d",slot,id,orig->name,r,find(r)->name,paint); logf_(b);
+  { DWORD t=now-g_t0; wsprintfA(b,"[opponent %d.%ds] slot %d: %d (%s) -> %d (%s), paint %d",t/1000,(t/100)%10,slot,id,orig->name,r,find(r)?find(r)->name:"?",paint); logf_(b); }
   return g_origSet(self,edx,slot,r,paint,flag);
 }
 
-/* Bundle loader - logging only now. */
-static int __fastcall HookLoad(void* self,void* edx,int mode,int id,int slot,int a4,int a5){
-  char b[128]; wsprintfA(b,"  load: slot %d car %d (%s)",slot,id,mode==1?"player":"AI"); logf_(b);
-  return g_origLoad(self,edx,mode,id,slot,a4,a5);
+/* The race's opponent preloader (0x75C1C0) builds a list of cars to keep loaded from the event's
+   ORIGINAL opponent list, then adds the actual racers. With randomized opponents that loads every
+   original car as well (up to 11 extra car bundles), which overloads the loader in big races
+   (Round Trip: hang or crash during fix-up). Swap each original id for the car we put in its slot. */
+#define PRE_ADDR 0x0075C3D1
+static const BYTE kExpPre[9]={0x8B,0x10,0x89,0x94,0x8E,0xCC,0x00,0x00,0x00};
+volatile unsigned g_preRet=0x0075C3DA, g_preSkip=0x0075C3E0;
+int __cdecl mapPreload(int id){
+  DWORD now=GetTickCount();
+  for(int s=1;s<MAXSLOT;s++) if(id && g_slotOrig[s]==id && g_slotNew[s] && now-g_slotTime[s]<120000) return g_slotNew[s];
+  /* Not (yet) assigned by us: drop it. The real racers are added to the same list separately,
+     so dropping the event's original cars only avoids loading cars that will not race. */
+  if(g_enabled && find(id)) return 0;
+  return id;
+}
+/* Second list source (0x75C497): the racer entities. Their id is still the event's original car. */
+#define PRE2_ADDR 0x0075C497
+volatile unsigned g_pre2Ret=0x0075C4A0, g_pre2Skip=0x0075C4A6;
+/* obj = the racer's vehicle record; its car id is at +0x30 (read by 0x6788D0). Round Trip spawns its
+   racers from that record, so it must name the car we actually loaded, not the event's original. */
+int __cdecl mapPreload2(int id,BYTE* obj){
+  DWORD now=GetTickCount();
+  for(int i=0;i<g_npm;i++) if(g_pm[i].rec==obj && now-g_pm[i].t<120000) return id;   /* set up already */
+  for(int s=1;s<MAXSLOT;s++) if(id && g_slotOrig[s]==id && g_slotNew[s] && now-g_slotTime[s]<120000){
+    int r=g_slotNew[s];
+    if(r!=id && obj && readable(obj+0x30) && *(int*)(obj+0x30)==id) *(int*)(obj+0x30)=r;
+    return r; }
+  return id;
+}
+void Pre2Stub(void);
+__asm__(".globl _Pre2Stub\n_Pre2Stub:\n"
+  "  pushl %ecx\n  pushl %eax\n  pushl %edi\n  pushl (%eax)\n  call _mapPreload2\n  addl $8,%esp\n  movl %eax,%edx\n"
+  "  popl %eax\n  popl %ecx\n  testl %edx,%edx\n  jz 1f\n  movl %edx,0xcc(%esi,%ecx,4)\n  jmp *_g_pre2Ret\n"
+  "1:\n  jmp *_g_pre2Skip\n");
+void PreStub(void);
+__asm__(".globl _PreStub\n_PreStub:\n"
+  "  pushl %ecx\n  pushl %eax\n  pushl (%eax)\n  call _mapPreload\n  addl $4,%esp\n  movl %eax,%edx\n"
+  "  popl %eax\n  popl %ecx\n  testl %edx,%edx\n  jz 1f\n  movl %edx,0xcc(%esi,%ecx,4)\n  jmp *_g_preRet\n"
+  "1:\n  jmp *_g_preSkip\n");
+
+static BYTE g_scanBuf[0x10000+0x40];
+typedef struct { BYTE* it; int orig, now_; } ItemOrig; static ItemOrig g_itemOrig[64]; static int g_nItemOrig=0;
+static void seqFixScan(void){
+  if(!g_seqFixOn) return;
+  DWORD now=GetTickCount(); if(!g_seqFixUntil || now>g_seqFixUntil || now<g_seqNext) return; g_seqNext=now+1000;
+  HANDLE me=GetCurrentProcess(); BYTE* a=(BYTE*)0x10000; MBI m; char l[300];
+  while((unsigned)a<0x7FFE0000 && VirtualQuery(a,&m,sizeof m)){
+    BYTE* base=(BYTE*)m.BaseAddress; SIZE_T sz=m.RegionSize;
+    if(m.State==0x1000 && (m.Protect&0xCC) && !(m.Protect&0x101) && sz>=0x40){
+      for(SIZE_T c=0;c<sz;c+=0x10000){
+        SIZE_T n=sz-c; if(n>0x10000+0x40) n=0x10000+0x40; SIZE_T got=0;
+        if(!ReadProcessMemory(me,base+c,g_scanBuf,n,&got) || got<0x40) continue;
+        SIZE_T lim=got<0x10000+0x40?got:0x10000+0x40; if(c+0x10000<sz && lim>0x10000) lim=0x10000+0x30;
+        for(SIZE_T o=8;o+0x30<=lim && o<0x10000+8;o+=4){
+          if(*(unsigned*)(g_scanBuf+o)!=0x676F92C5u || *(unsigned*)(g_scanBuf+o+4)!=0x30) continue;
+          BYTE* it=base+c+o-8; BYTE* bi=g_scanBuf+o-8; if(*(int*)(bi+0x28)!=1) continue;
+          int car=*(int*)(bi+0x2C);
+          { int k; for(k=0;k<g_nItemOrig;k++) if(g_itemOrig[k].it==it && g_itemOrig[k].now_==car) { car=g_itemOrig[k].orig; break; } }
+          for(int i=0;i<g_npm;i++) if(g_pm[i].orig==car && g_pm[i].now_ && g_pm[i].now_!=car && now-g_pm[i].t<180000){
+            int nv=g_pm[i].now_; SIZE_T w=0;
+            if(nv==*(int*)(bi+0x2C)) break;
+            if(WriteProcessMemory(me,it+0x2C,&nv,4,&w) && w==4){
+              { int k; for(k=0;k<g_nItemOrig;k++) if(g_itemOrig[k].it==it) break;
+                if(k==g_nItemOrig && g_nItemOrig<64) g_nItemOrig++;
+                if(k<64){ g_itemOrig[k].it=it; g_itemOrig[k].orig=car; g_itemOrig[k].now_=nv; } }
+              DWORD t=now-g_t0; wsprintfA(l,"[intro fix %d.%ds] race intro item %08X (id %06X): car %d (%s) -> %d (%s)",t/1000,(t/100)%10,(unsigned)it,
+                *(unsigned*)(bi+0x14),car,find(car)?find(car)->name:"?",nv,find(nv)?find(nv)->name:"?"); logf_(l); }
+            break; } } }
+    }
+    a=base+sz; if(!sz) break;
+  }
 }
 
 static int matches(const BYTE* p,const BYTE* e){ for(int i=0;i<16;i++) if(p[i]!=e[i]) return 0; return 1; }
@@ -444,44 +571,24 @@ static void installEvents(void){
   installMarkerHooks();
 }
 
-#ifdef EVENT_DIAG
-typedef BYTE (__fastcall *MemberFn)(void*,void*,int,int,int);
-static MemberFn g_origMember;
-static BYTE __fastcall HookMember(void* self,void* edx,int key,int car,int flag){
-  unsigned ret=(unsigned)__builtin_return_address(0); int seen=0;
-  for(int i=0;i<g_nCallers;i++) if(g_callers[i]==ret){seen=1;break;}
-  if(!seen && g_nCallers<64){ char b[96]; g_callers[g_nCallers++]=ret; wsprintfA(b,"[diag] membership check called from %08X",ret); logf_(b); }
-  return g_origMember(self,edx,key,car,flag);
-}
-static int g_nCrash=0;
-static long __stdcall CrashLog(void* xp){
-  unsigned* rec=*(unsigned**)xp; BYTE* ctx=((BYTE**)xp)[1];
-  if(rec[0]!=0xC0000005 || g_nCrash>=3) return 0;
-  g_nCrash++;
-  char b[600]; unsigned esp=*(unsigned*)(ctx+0xC4);
-  int n=wsprintfA(b,"[crash] access violation at %08X (reading %08X) eax %08X ecx %08X edx %08X esi %08X edi %08X; stack:",
-     rec[3],rec[6],*(unsigned*)(ctx+0xB0),*(unsigned*)(ctx+0xAC),*(unsigned*)(ctx+0xA8),*(unsigned*)(ctx+0xA0),*(unsigned*)(ctx+0x9C));
-  int k=0; for(unsigned p=esp;k<16 && p<esp+0x800;p+=4){ if(!readable((void*)p)) break; unsigned v=*(unsigned*)p;
-    if(v>0x401000&&v<0xF82000){ n+=wsprintfA(b+n," %08X",v); k++; } }
-  logf_(b); return 0;
-}
-static void installDiag(void){
-  BYTE* m=(BYTE*)0x006ECA10; static const BYTE e[9]={0x8B,0x41,0x7C,0x8B,0x89,0x80,0x00,0x00,0x00};
-  for(int i=0;i<9;i++) if(m[i]!=e[i]){ logf_("[diag] membership fn mismatch"); return; }
-  AddVectoredExceptionHandler(1,CrashLog);
-  logf_("[diag] diagnostics installed");
-}
-#endif
 
 static int install(void){
   BYTE* a=(BYTE*)LOAD_ADDR; BYTE* s=(BYTE*)SET_ADDR;
   if(!readable(a)||!readable(s)||!matches(a,kExpected)||!matches(s,kExpSet)) return 0;
   g_origSet=(SetSlotFn)hook(s,5,(void*)HookSet);
-  g_origLoad=(LoadFn)hook(a,6,(void*)HookLoad);
+  { BYTE* f=(BYTE*)PRE_ADDR; int ok=readable(f); for(int i=0;ok&&i<9;i++) if(f[i]!=kExpPre[i]) ok=0;
+    if(ok){ DWORD old; VirtualProtect(f,9,0x40,&old); f[0]=0xE9; *(int*)(f+1)=(int)(BYTE*)PreStub-(int)(f+5);
+      for(int i=5;i<9;i++) f[i]=0x90; VirtualProtect(f,9,old,&old); FlushInstructionCache(GetCurrentProcess(),f,9); }
+    else logf_("ERROR: preload hook not installed"); }
+  { BYTE* f=(BYTE*)PRE2_ADDR; int ok=readable(f); for(int i=0;ok&&i<9;i++) if(f[i]!=kExpPre[i]) ok=0;
+    if(ok){ DWORD old; VirtualProtect(f,9,0x40,&old); f[0]=0xE9; *(int*)(f+1)=(int)(BYTE*)Pre2Stub-(int)(f+5);
+      for(int i=5;i<9;i++) f[i]=0x90; VirtualProtect(f,9,old,&old); FlushInstructionCache(GetCurrentProcess(),f,9); }
+    else logf_("ERROR: preload hook 2 not installed"); }
+  { BYTE* f=(BYTE*)PM_ADDR; int ok=readable(f); for(int i=0;ok&&i<8;i++) if(f[i]!=kExpPm[i]) ok=0;
+    if(ok){ DWORD old; VirtualProtect(f,8,0x40,&old); f[0]=0xE9; *(int*)(f+1)=(int)(BYTE*)PmStub-(int)(f+5);
+      for(int i=5;i<8;i++) f[i]=0x90; VirtualProtect(f,8,old,&old); FlushInstructionCache(GetCurrentProcess(),f,8); }
+    else logf_("ERROR: racer setup hook not installed"); }
   installEvents();
-#ifdef EVENT_DIAG
-  installDiag();
-#endif
   return 1;
 }
 
@@ -497,6 +604,7 @@ static DWORD __stdcall worker(void* x){
   g_noDupes=GetPrivateProfileIntA("Settings","AvoidDuplicateOpponents",1,ini);
   g_avoidPlayer=GetPrivateProfileIntA("Settings","AvoidPlayerCar",1,ini);
   g_logOn=GetPrivateProfileIntA("Settings","WriteLog",1,ini);
+  g_seqFixOn=GetPrivateProfileIntA("Settings","FixRaceIntro",1,ini);
   g_skipMW=GetPrivateProfileIntA("Settings","SkipMostWantedRaces",1,ini);
   g_paint=GetPrivateProfileIntA("Settings","RandomizePaint",1,ini);
   g_allEvents=GetPrivateProfileIntA("Settings","AllEventsForAllCars",1,ini);
@@ -506,9 +614,10 @@ static DWORD __stdcall worker(void* x){
   logf_("OpenRaces - waiting for game code to unpack...");
   /* NFS13.exe is decrypted by its DRM stub after DLLs load, so wait for the real bytes. */
   for(int i=0;i<12000;i++){
-    if(install()){ wsprintfA(b,"Hooks installed (v7.1). %d cars in the class table.",NCARS); logf_(b);
+    if(install()){ wsprintfA(b,"Hooks installed (v7.6). %d cars in the class table.",NCARS); logf_(b);
       /* keep the event table opened up (it is patched once loaded, and again if the game reloads it) */
-      while(g_allEvents){ if(!g_origView) patchEvents(); Sleep(250); }
+      g_t0=GetTickCount();
+      for(int k=0;;k++){ if(g_allEvents && !g_origView && k%3==0) patchEvents(); seqFixScan(); Sleep(100); }
       return 0; }
     Sleep(10);
   }
