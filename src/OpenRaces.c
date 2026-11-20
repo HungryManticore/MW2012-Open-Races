@@ -172,7 +172,7 @@ static int __fastcall HookSet(void* self,void* edx,int slot,int id,int livery,in
   }
   DWORD now=GetTickCount();
   /* The game re-applies a slot's stored car at times; never re-roll a car we already chose. */
-  if(id && id==g_slotNew[slot]) { g_slotTime[slot]=now; return g_origSet(self,edx,slot,id,g_slotPaint[slot],flag); }
+  if(id && id==g_slotNew[slot] && now-g_slotTime[slot]<30000) { g_slotTime[slot]=now; return g_origSet(self,edx,slot,id,g_slotPaint[slot],flag); }
   if(id && id==g_slotOrig[slot] && now-g_slotTime[slot]<30000){
     g_slotTime[slot]=now; return g_origSet(self,edx,slot,g_slotNew[slot],g_slotPaint[slot],flag); }
   const Car* orig=find(id); const Car* pl=find(g_playerId);
@@ -182,12 +182,15 @@ static int __fastcall HookSet(void* self,void* edx,int slot,int id,int livery,in
     return g_origSet(self,edx,slot,id,livery,flag);
   }
   if(now-g_lastPick>8000) g_nUsed=0; g_lastPick=now;
-  int r; PreMap* pm=pmFind(id);
-  if(pm){ r=id; id=pm->orig; orig=find(id); if(!orig) orig=find(r); }   /* chosen at racer setup already */
-  else {
-  r=pick(pl->cls); if(!r) r=id;  /* class has no allowed car: keep the game's own choice */
-  if(g_nUsed<64) g_used[g_nUsed++]=r;
+  /* Only race opponents are randomized. Their car is picked at racer setup (premap); anything else that
+     comes through here (free-roam jack spot cars, traffic specials) keeps the game's own car. */
+  PreMap* pm=pmFind(id);
+  if(!pm){
+    g_slotOrig[slot]=g_slotNew[slot]=0;
+    wsprintfA(b,"[vehicle] slot %d: %d (%s) unchanged [not a race opponent]",slot,id,orig->name); logf_(b);
+    return g_origSet(self,edx,slot,id,livery,flag);
   }
+  int r=id; id=pm->orig; orig=find(id); if(!orig) orig=find(r);   /* chosen at racer setup already */
   int paint = g_paint ? kPaints[rnd()%NPAINTS] : ((r==id)?livery:0);
   g_slotOrig[slot]=id; g_slotNew[slot]=r; g_slotPaint[slot]=paint; g_slotTime[slot]=now;
   { DWORD t=now-g_t0; wsprintfA(b,"[opponent %d.%ds] slot %d: %d (%s) -> %d (%s), paint %d",t/1000,(t/100)%10,slot,id,orig->name,r,find(r)?find(r)->name:"?",paint); logf_(b); }
@@ -614,7 +617,7 @@ static DWORD __stdcall worker(void* x){
   logf_("OpenRaces - waiting for game code to unpack...");
   /* NFS13.exe is decrypted by its DRM stub after DLLs load, so wait for the real bytes. */
   for(int i=0;i<12000;i++){
-    if(install()){ wsprintfA(b,"Hooks installed (v7.6). %d cars in the class table.",NCARS); logf_(b);
+    if(install()){ wsprintfA(b,"Hooks installed (v7.7). %d cars in the class table.",NCARS); logf_(b);
       /* keep the event table opened up (it is patched once loaded, and again if the game reloads it) */
       g_t0=GetTickCount();
       for(int k=0;;k++){ if(g_allEvents && !g_origView && k%3==0) patchEvents(); seqFixScan(); Sleep(100); }
