@@ -14,9 +14,8 @@ An ASI mod for **Need for Speed: Most Wanted (2012)**, PC version 1.4.0.0 (`NFS1
 
 ## Installation
 
-1. Install an ASI loader, for example [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) as `dinput8.dll`, in the game folder.
-2. Copy `dist/OpenRaces.asi` and `dist/OpenRaces.ini` into the game's `scripts` folder.
-3. Use an **unmodified** `GAMELOGIC/GAMEPLAY.BNDL`. The mod opens up the event lists in memory and needs the original lists to decide who gets parts.
+1. Download the latest release. Unpack it and copy it into the game's root directory/
+2. Use an **unmodified** `GAMELOGIC/GAMEPLAY.BNDL`. The mod opens up the event lists in memory and needs the original lists to decide who gets parts.
 
 ## Settings (`OpenRaces.ini`)
 
