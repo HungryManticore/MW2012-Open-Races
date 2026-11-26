@@ -33,7 +33,9 @@ An ASI mod for **Need for Speed: Most Wanted (2012)**, PC version 1.4.0.0 (`NFS1
 
 ## Building
 
-`./build.sh` builds `dist/OpenRaces.asi` with clang and lld (LLVM 18). It needs no Windows SDK or C runtime.
+`./build.sh` builds `dist/OpenRaces.asi` with a 32-bit mingw-w64 toolchain (`i686-w64-mingw32-gcc`, or `i686-w64-mingw32-clang` from llvm-mingw). On Debian/Ubuntu, `apt install gcc-mingw-w64-i686` is enough. Set `CC` and `WINDRES` to use other tool names.
+
+The DLL links against the normal C runtime (msvcrt) and carries a Windows version resource (`src/OpenRaces.rc`), so its file details show what it is. It only patches the game's own code in its own process: it does not read or write other processes' memory and does not scan memory.
 
 To change which cars can be picked as opponents, or their classes, edit the table in `src/cars.h`. The classes come from the game's own `VEHICLES/VEHICLELIST.BNDL`.
 

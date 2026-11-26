@@ -12,7 +12,7 @@
  *   0x0057BC70  vehicle bundle loader                    - version check only
  *   0x006CC9A1  racer setup (racer record car id)        - random car chosen here, before the racer is configured
  *   0x0075C3D1 / 0x0075C497  race car preloader lists    - original opponents replaced, so they are not loaded too
- *   race intro sequences (AddRaceCarSequenceItem data)   - opponents named by car id are pointed at the new cars
+ *   0x00850EAB  race intro AddRaceCar item, car id read   - opponents named by car id mapped to the new cars
  *   0x006E65E0  post-event awards                        - part rewards filter
  *   0x006ECD70  car's own event list (max 10)            - replaced, original lists
  *   0x006ECA10  event/car membership                     - EasyDrive Races caller gets original lists
@@ -30,7 +30,6 @@ API HANDLE CreateFileA(const char*,DWORD,DWORD,void*,DWORD,DWORD,HANDLE);
 API BOOL WriteFile(HANDLE,const void*,DWORD,DWORD*,void*); API BOOL FlushFileBuffers(HANDLE);
 API BOOL VirtualProtect(void*,SIZE_T,DWORD,DWORD*); API void* VirtualAlloc(void*,SIZE_T,DWORD,DWORD);
 API BOOL FlushInstructionCache(HANDLE,const void*,SIZE_T); API HANDLE GetCurrentProcess(void);
-API BOOL ReadProcessMemory(HANDLE,const void*,void*,SIZE_T,SIZE_T*); API BOOL WriteProcessMemory(HANDLE,void*,const void*,SIZE_T,SIZE_T*);
 API unsigned GetPrivateProfileIntA(const char*,const char*,int,const char*);
 API BOOL QueryPerformanceCounter(long long*);
 API void* AddVectoredExceptionHandler(unsigned long,long(__stdcall*)(void*));
@@ -54,7 +53,7 @@ static const int kPaints[]={1197606,1197607,1197608,1197609,1197610,1197611,1197
 #define NPAINTS ((int)(sizeof(kPaints)/sizeof(kPaints[0])))
 static int g_playerId=0;
 static DWORD g_t0=0;
-static DWORD g_seqFixUntil=0, g_seqNext=0; static int g_seqFixOn=1;
+static int g_seqFixOn=1, g_lastIntroFrom=0, g_lastIntroTo=0;
 static int g_used[64]; static int g_nUsed=0; static DWORD g_lastPick=0;
 static unsigned g_rng=0x9E3779B9u;
 
@@ -138,7 +137,6 @@ void __cdecl premap(int* idp,BYTE* rec,void* game){
   int r=pick(pl->cls); if(!r) return;
   if(g_nUsed<64) g_used[g_nUsed++]=r;
   *idp=r; if(rec){ *(int*)(rec+0x30)=r; refreshRecord(rec,game); }
-  g_seqFixUntil=now+40000; g_seqNext=0;
   if(g_npm<32){ g_pm[g_npm].rec=rec; g_pm[g_npm].orig=id; g_pm[g_npm].now_=r; g_pm[g_npm].t=now; g_pm[g_npm].game=game; g_npm++; }
   DWORD t=now-g_t0; wsprintfA(b,"[racer setup %d.%ds] %d (%s) -> %d (%s)",t/1000,(t/100)%10,id,c->name,r,find(r)->name); logf_(b);
 }
@@ -237,38 +235,27 @@ __asm__(".globl _PreStub\n_PreStub:\n"
   "  popl %eax\n  popl %ecx\n  testl %edx,%edx\n  jz 1f\n  movl %edx,0xcc(%esi,%ecx,4)\n  jmp *_g_preRet\n"
   "1:\n  jmp *_g_preSkip\n");
 
-static BYTE g_scanBuf[0x10000+0x40];
-typedef struct { BYTE* it; int orig, now_; } ItemOrig; static ItemOrig g_itemOrig[64]; static int g_nItemOrig=0;
-static void seqFixScan(void){
-  if(!g_seqFixOn) return;
-  DWORD now=GetTickCount(); if(!g_seqFixUntil || now>g_seqFixUntil || now<g_seqNext) return; g_seqNext=now+1000;
-  HANDLE me=GetCurrentProcess(); BYTE* a=(BYTE*)0x10000; MBI m; char l[300];
-  while((unsigned)a<0x7FFE0000 && VirtualQuery(a,&m,sizeof m)){
-    BYTE* base=(BYTE*)m.BaseAddress; SIZE_T sz=m.RegionSize;
-    if(m.State==0x1000 && (m.Protect&0xCC) && !(m.Protect&0x101) && sz>=0x40){
-      for(SIZE_T c=0;c<sz;c+=0x10000){
-        SIZE_T n=sz-c; if(n>0x10000+0x40) n=0x10000+0x40; SIZE_T got=0;
-        if(!ReadProcessMemory(me,base+c,g_scanBuf,n,&got) || got<0x40) continue;
-        SIZE_T lim=got<0x10000+0x40?got:0x10000+0x40; if(c+0x10000<sz && lim>0x10000) lim=0x10000+0x30;
-        for(SIZE_T o=8;o+0x30<=lim && o<0x10000+8;o+=4){
-          if(*(unsigned*)(g_scanBuf+o)!=0x676F92C5u || *(unsigned*)(g_scanBuf+o+4)!=0x30) continue;
-          BYTE* it=base+c+o-8; BYTE* bi=g_scanBuf+o-8; if(*(int*)(bi+0x28)!=1) continue;
-          int car=*(int*)(bi+0x2C);
-          { int k; for(k=0;k<g_nItemOrig;k++) if(g_itemOrig[k].it==it && g_itemOrig[k].now_==car) { car=g_itemOrig[k].orig; break; } }
-          for(int i=0;i<g_npm;i++) if(g_pm[i].orig==car && g_pm[i].now_ && g_pm[i].now_!=car && now-g_pm[i].t<180000){
-            int nv=g_pm[i].now_; SIZE_T w=0;
-            if(nv==*(int*)(bi+0x2C)) break;
-            if(WriteProcessMemory(me,it+0x2C,&nv,4,&w) && w==4){
-              { int k; for(k=0;k<g_nItemOrig;k++) if(g_itemOrig[k].it==it) break;
-                if(k==g_nItemOrig && g_nItemOrig<64) g_nItemOrig++;
-                if(k<64){ g_itemOrig[k].it=it; g_itemOrig[k].orig=car; g_itemOrig[k].now_=nv; } }
-              DWORD t=now-g_t0; wsprintfA(l,"[intro fix %d.%ds] race intro item %08X (id %06X): car %d (%s) -> %d (%s)",t/1000,(t/100)%10,(unsigned)it,
-                *(unsigned*)(bi+0x14),car,find(car)?find(car)->name:"?",nv,find(nv)?find(nv)->name:"?"); logf_(l); }
-            break; } } }
-    }
-    a=base+sz; if(!sz) break;
-  }
+/* Race intros (Genesys AddRaceCarSequenceItem) can name an opponent by car id. Round Trip's intro names five
+   of its original opponents; with other cars on the grid the intro waits for them forever and the loading
+   screen never closes. The item's handler reads that car id at 0x850EAB (mov edx,[ecx+0x2C]) before asking
+   for the race car; give it the car that took that opponent's place instead. The game data is not changed. */
+#define INTRO_ADDR 0x00850EAB
+static const BYTE kExpIntro[12]={0x8B,0x51,0x2C,0x8B,0x84,0x24,0xBC,0x00,0x00,0x00,0x89,0x10};
+volatile unsigned g_introRet=0x00850EB5;
+int __cdecl mapIntroCar(int car){
+  if(!g_seqFixOn || !g_enabled) return car;
+  DWORD now=GetTickCount();
+  for(int i=0;i<g_npm;i++) if(g_pm[i].orig==car && g_pm[i].now_ && g_pm[i].now_!=car && now-g_pm[i].t<600000){
+    int nv=g_pm[i].now_;
+    if(g_lastIntroFrom!=car || g_lastIntroTo!=nv){ char l[200]; DWORD t=now-g_t0; g_lastIntroFrom=car; g_lastIntroTo=nv;
+      wsprintfA(l,"[intro %d.%ds] race intro asks for %d (%s) -> %d (%s)",t/1000,(t/100)%10,car,find(car)?find(car)->name:"?",nv,find(nv)?find(nv)->name:"?"); logf_(l); }
+    return nv; }
+  return car;
 }
+void IntroStub(void);
+__asm__(".globl _IntroStub\n_IntroStub:\n"
+  "  movl 0x2c(%ecx),%edx\n  pushl %ecx\n  pushl %edx\n  call _mapIntroCar\n  addl $4,%esp\n  popl %ecx\n"
+  "  movl %eax,%edx\n  movl 0xbc(%esp),%eax\n  jmp *_g_introRet\n");
 
 static int matches(const BYTE* p,const BYTE* e){ for(int i=0;i<16;i++) if(p[i]!=e[i]) return 0; return 1; }
 static void* hook(BYTE* p,int n,void* fn){
@@ -591,6 +578,10 @@ static int install(void){
     if(ok){ DWORD old; VirtualProtect(f,8,0x40,&old); f[0]=0xE9; *(int*)(f+1)=(int)(BYTE*)PmStub-(int)(f+5);
       for(int i=5;i<8;i++) f[i]=0x90; VirtualProtect(f,8,old,&old); FlushInstructionCache(GetCurrentProcess(),f,8); }
     else logf_("ERROR: racer setup hook not installed"); }
+  { BYTE* f=(BYTE*)INTRO_ADDR; int ok=readable(f); for(int i=0;ok&&i<12;i++) if(f[i]!=kExpIntro[i]) ok=0;
+    if(ok){ DWORD old; VirtualProtect(f,10,0x40,&old); f[0]=0xE9; *(int*)(f+1)=(int)(BYTE*)IntroStub-(int)(f+5);
+      for(int i=5;i<10;i++) f[i]=0x90; VirtualProtect(f,10,old,&old); FlushInstructionCache(GetCurrentProcess(),f,10); }
+    else logf_("ERROR: race intro hook not installed"); }
   installEvents();
   return 1;
 }
@@ -617,10 +608,10 @@ static DWORD __stdcall worker(void* x){
   logf_("OpenRaces - waiting for game code to unpack...");
   /* NFS13.exe is decrypted by its DRM stub after DLLs load, so wait for the real bytes. */
   for(int i=0;i<12000;i++){
-    if(install()){ wsprintfA(b,"Hooks installed (v7.7). %d cars in the class table.",NCARS); logf_(b);
+    if(install()){ wsprintfA(b,"Hooks installed (v1.3). %d cars in the class table.",NCARS); logf_(b);
       /* keep the event table opened up (it is patched once loaded, and again if the game reloads it) */
       g_t0=GetTickCount();
-      for(int k=0;;k++){ if(g_allEvents && !g_origView && k%3==0) patchEvents(); seqFixScan(); Sleep(100); }
+      for(int k=0;;k++){ if(g_allEvents && !g_origView && k%3==0) patchEvents(); Sleep(100); }
       return 0; }
     Sleep(10);
   }
